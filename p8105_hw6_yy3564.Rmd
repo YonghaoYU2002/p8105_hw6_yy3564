@@ -5,6 +5,86 @@ date: "2024-11-27"
 output: github_document
 ---
 
-```{r setup, include=FALSE}
+```{r, warning=FALSE}
+library(tidyverse)
+library(ggcorrplot)
+library(modelr)
+library(mgcv)
+```
+
+
+# Problem 2
+
+### First, import the data and do data preprocessing, Then create a city_state variable, and a binary variable indicating whether the homicide is solved
+```{r}
+homicide = read_csv("data/homicide-data.csv") |>
+  janitor::clean_names() |>
+  mutate(city_state = str_c(city, state, sep = ", "),
+         solved = ifelse(disposition == "Closed by arrest", 1, 0), 
+         victim_age = as.numeric(victim_age)) |>
+  filter(victim_race %in% c("White", "Black"))|>
+  filter(!city_state %in% c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO", "Tulsa, AL"))
+homicide
+```
+
+
+### Then focus on Baltimore
+```{r}
+baltimore = homicide |>
+  filter(city_state == "Baltimore, MD") |>
+  glm(solved ~ victim_age + victim_sex + victim_race, data = _, family = binomial)
+result_display_baltimore = baltimore |>
+  broom::tidy()
+result_display_baltimore
+```
+
+Then we calculate and display the adjusted odds ratio and CI for Baltimore
+```{r}
+adjusted_odds_ratio_CI <- baltimore |>
+  broom::tidy(conf.int = TRUE) |>
+  filter(term == "victim_sexMale") |>
+  transmute(
+    odds_ratio = exp(estimate),
+    conf_low = exp(conf.low),
+    conf_high = exp(conf.high)
+  )
+adjusted_odds_ratio_CI
+```
+
+Then for all cities, we calculate and display the adjusted odds ratio and CI
+```{r}
+model_odds_ratio_ci = function(city_data){
+  fit = glm(solved ~ victim_age + victim_sex + victim_race, data = city_data, family = binomial) |>
+    broom::tidy(conf.int = TRUE, exponentiate = TRUE) |>
+    filter(term == "victim_sexMale") |>
+    select(odds_ratio = estimate, conf.low, conf.high)
+}
+cities = homicide |>
+  group_by(city_state) |>
+  nest() |>
+  mutate(results = map(data, model_odds_ratio_ci)) |>
+  unnest(results)
+cities[,-2]
+```
+
+
+
+```{r}
+ggplot(cities, aes(x = reorder(city_state, odds_ratio), y = odds_ratio)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
+  labs(
+    x = "City, State",
+    y = "Estimated Odds Ratio (OR)",
+    title = "Estimated Odds Ratios for all cities"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
+```
+
+
+
+
+# Problem 3
+```{r}
 
 ```
