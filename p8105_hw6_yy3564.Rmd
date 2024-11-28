@@ -10,6 +10,7 @@ library(tidyverse)
 library(ggcorrplot)
 library(modelr)
 library(mgcv)
+library(forcats)
 ```
 
 
@@ -38,7 +39,7 @@ result_display_baltimore = baltimore |>
 result_display_baltimore
 ```
 
-Then we calculate and display the adjusted odds ratio and CI for Baltimore
+### Then we calculate and display the adjusted odds ratio and CI for Baltimore
 ```{r}
 adjusted_odds_ratio_CI <- baltimore |>
   broom::tidy(conf.int = TRUE) |>
@@ -51,7 +52,7 @@ adjusted_odds_ratio_CI <- baltimore |>
 adjusted_odds_ratio_CI
 ```
 
-Then for all cities, we calculate and display the adjusted odds ratio and CI
+### Then for all cities, we calculate and display the adjusted odds ratio and CI
 ```{r}
 model_odds_ratio_ci = function(city_data){
   fit = glm(solved ~ victim_age + victim_sex + victim_race, data = city_data, family = binomial) |>
@@ -81,10 +82,102 @@ ggplot(cities, aes(x = reorder(city_state, odds_ratio), y = odds_ratio)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
 ```
 
-
+### Comment on the plot:
+From the plot, we can observe that the cities with the highest odds ratios for solving homicides like Minneapolis, MN, Stockton, CA, and Fresno, CA show ORs above 1, indicating that homicides involving male victims are more likely to be solved than those involving female victims. However, the wide confidence intervals, with lower bounds dipping below 1, highlight considerable statistical uncertainty. This suggests that while male victims may have an advantage, the findings lack precision and should be interpreted cautiously. Conversely, cities like New York, NY, Baton Rouge, LA, and Omaha, NE have ORs closer to 0, meaning male victim cases are less likely to be solved. These results are statistically robust, with narrow confidence intervals remaining below 1.
 
 
 # Problem 3
-```{r}
 
+### Load and clean the data for regression analysis (i.e. convert numeric to factor where appropriate, check for missing data, etc.)
+### Then I calculate the total amount of NA values
+```{r}
+birthweight = read_csv("data/birthweight.csv") |>
+  janitor::clean_names() |>
+  mutate(babysex = factor(babysex, labels = c("male", "female"))) |>
+  mutate(frace = factor(frace, levels = c(1, 2, 3, 4, 8, 9), labels = c("white", "black", "asian", "puerto rican", "other", "unknown")))|>
+  mutate(malform = factor(malform, labels = c("absent", "present")),mrace = factor(mrace, levels = c(1, 2, 3, 4, 8),labels = c("white", "black", "asian", "puerto rican", "other")))
+sum(is.na(birthweight))
 ```
+
+### Then I use all variables as predictor for the birth weight. After that, I use stepwise model selection to select some variables that best explain the variation in birth weight
+```{r}
+full_model = lm(bwt ~ ., data = birthweight)
+stepwise_model = MASS::stepAIC(full_model, direction = "both", trace = FALSE) |>
+  broom::tidy()
+stepwise_model
+```
+
+### Then I check the multicollinearity among the predictors
+```{r}
+meaningful_vars = birthweight[c("babysex", "bhead", "blength", "delwt", "fincome", "gaweeks", "mheight", "mrace", "parity", "ppwt", "smoken")]
+meaningful_vars$babysex = as.numeric(meaningful_vars$babysex)
+meaningful_vars$mrace = as.numeric(meaningful_vars$mrace)
+correlation_matrix = cor(meaningful_vars)
+ggcorrplot(correlation_matrix, hc.order = TRUE, type = "lower", lab = TRUE, colors = c("yellow", "white", "purple"))
+```
+
+The plot revealed that ppwt was strongly correlated with delwt (r = 0.87), indicating high multicollinearity. So I remove ppwt variable. Hence I include babysex, blength, bhead, delwt, fincome, gaweeks, mheight, mrace, parity, and smoken as my predictors
+
+### Plot of model residuals against fitted values
+```{r}
+final_model = lm(bwt ~ babysex + blength + bhead +  delwt + fincome + gaweeks + mheight + mrace + parity + smoken, data = birthweight)
+final_results = birthweight |> 
+  modelr::add_residuals(final_model) |> 
+  modelr::add_predictions(final_model)
+final_plot = ggplot(final_results, aes(x = pred, y = resid)) +
+  geom_point(alpha = 0.2, color = "blue") +
+  labs( x = "Fitted Value", y = "Residual", title = "Final Regression Model Plot")
+final_plot
+```
+
+The plot shows that most residuals are around zero, suggesting that the regression model is good in performance. 
+
+### Model comparison
+```{r}
+set.seed(50)
+comparison_plot_final = 
+  crossv_mc(birthweight, 100) |>
+  mutate(train = map(train, as_tibble), test = map(test, as_tibble)) |>
+  mutate(
+    mymodel = map(train, \(df) lm(bwt ~ babysex + blength + bhead + delwt + fincome + gaweeks + mheight + mrace + parity + smoken, data = birthweight)),
+    model1 = map(train, \(df) lm(bwt ~ blength + gaweeks, data = birthweight)),
+    model2 = map(train, \(df) lm(bwt ~ bhead * blength * babysex, data = birthweight))
+  ) |>
+  mutate(
+    rmse_mymodel = map2_dbl(mymodel, test, \(mod, df) rmse(model = mod, data = df)),
+    rmse_model1 = map2_dbl(model1, test, \(mod, df) rmse(model = mod, data = df)),
+    rmse_model2 = map2_dbl(model2, test, \(mod, df) rmse(model = mod, data = df))
+  ) |>
+  select(starts_with("rmse")) |>
+  pivot_longer(everything(), names_to = "model", values_to = "rmse",names_prefix = "rmse_") |> 
+  mutate(model = fct_inorder(model))
+
+boxplot_stats = comparison_plot_final |>
+  group_by(model) |>
+  summarize(min = min(rmse), q1 = quantile(rmse, 0.25), median = median(rmse), q3 = quantile(rmse, 0.75), max = max(rmse), .groups = "drop")
+
+comparison_plot_final_plot = ggplot(comparison_plot_final, aes(x = model, y = rmse)) +
+  geom_boxplot(aes(fill = model), alpha = 0.7) +  
+  geom_text(
+    data = boxplot_stats,
+    aes(x = model, y = min, label = round(min, 2)), vjust = 1.5, size = 3, color = "blue") + 
+  geom_text(
+    data = boxplot_stats,
+    aes(x = model, y = q1, label = round(q1, 2)), vjust = 1.5, size = 3, color = "navy") +  
+  geom_text(
+    data = boxplot_stats,
+    aes(x = model, y = median, label = round(median, 2)), vjust = -0.5, size = 3, color = "black") +  
+  geom_text(
+    data = boxplot_stats,
+    aes(x = model, y = q3, label = round(q3, 2)), vjust = -1.5, size = 3, color = "navy") +  
+  geom_text(
+    data = boxplot_stats,
+    aes(x = model, y = max, label = round(max, 2)), vjust = -0.5, size = 3, color = "red") +  
+  labs(x = "Models", y = "RMSE", title = "Model Comparison", fill = "Model") + 
+  scale_fill_manual(values = c("mymodel" = "purple", "model1" = "orange", "model2" = "brown"))
+  theme_minimal() 
+  
+comparison_plot_final_plot
+```
+
+The boxplot shows that my model has the lowest RMSE. This indicates that my model is the best model among the three models provided for predicting children’s birthweight.
